@@ -1,6 +1,6 @@
-# Dual Governance mechanism design overview (2023-10-23)
+# Dual Governance mechanism design overview (2023-12-05)
 
-**A version from 2023-10-23. Please find the current version [here](https://hackmd.io/@skozin/r17mlW2la).**
+**A version from 2023-12-05. Please find the current version [here](https://hackmd.io/@skozin/r17mlW2la).**
 
 ---
 
@@ -25,8 +25,9 @@ Another way of looking at dual governance is that it implements 1) a dynamic use
 * **DAO proposal:** a specific change in the the onchain state of the Lido protocol or the Lido DAO proposed by LDO holders. Proposals have to be approved via onchain voting between LDO holders to become executable.
 * **DAO decision:** a DAO proposal approved via onchain voting between LDO holders.
 * **stETH:** the fungible deposit receipt token of the Lido protocol. Allows the holder to withdraw the deposited ETH plus all accrued rewards (minus the fees) and penalties. Rewards/penalties accrual is expressed by periodic rebases of the token balances.
-* **wstETH:** an non-rebasable, immutable, and trustless wrapper around stETH deployed as an integral part of the Lido protocol. At any moment in time, there is a fixed wstETH/stETH rate effective for wrapping and unwrapping. The rate changes on each stETH rebase. _For the purpose of this document, any wstETH holder is considered an stETH holder with the stETH balance being equal wstETH balance multiplied by the current wstETH/stETH rate_.
-* **Stakers:** EOAs and smart contract wallets that hold stETH and wstETH tokens or deposit them into various deFi protocols and ceFi platforms: DEXes, CEXes, lending and stablecoin protocols, custodies, etc.
+* **wstETH:** an non-rebasable, immutable, and trustless wrapper around stETH deployed as an integral part of the Lido protocol. At any moment in time, there is a fixed wstETH/stETH rate effective for wrapping and unwrapping. The rate changes on each stETH rebase.
+* **Withdrawal NFT:** a non-fungible token minted by the Lido withdrawal queue contract as part of the (w)stETH withdrawal to ETH, parametrized by the underlying (w)stETH amount and the position in queue. Gives holder the right to claim the corresponding ETH amount after the withdrawal is complete. Doesn't entitle the holder to receive staking rewards.
+* **Stakers:** EOAs and smart contract wallets that hold stETH, wstETH tokens and withdrawal NFTs or deposit them into various deFi protocols and ceFi platforms: DEXes, CEXes, lending and stablecoin protocols, custodies, etc.
 * **Node operators:** parties registered in the Lido protocol willing to run Ethereum validators using the delegated ETH in exchange for a fee taken from the staking rewards. Node operators generate validator keys and at any time remain their sole holders, having full and exclusive control over Ethereum validators. Node operators are required to set their validators' withdrawal credentials to point to the specific Lido protocol smart contract.
 
 ## High-level description
@@ -39,16 +40,23 @@ The mechanism can be described as a state machine with each state imposing diffe
 
 The Normal state is the state the governance is designed to spend the most time within. The DAO can publish proposals, vote on them and execute the decisions after the standard timelock of `GovernanceProposalTimelock` days.
 
-At any point in time, stakers can signal their opposition to the DAO by moving their stETH into a dedicated smart contract called **veto signalling escrow**, as well as move their stETH out of this escrow. This creates an onchain oracle for measuring stakers' disagreement with the DAO decisions.
+At any point in time, stakers can signal their opposition to the DAO by moving their stETH, wstETH, and withdrawal NFTs into a dedicated smart contract called **veto signalling escrow**, as well as move it out of this escrow. This creates an onchain oracle for measuring stakers' disagreement with the DAO decisions.
 
-When a staker moves their stETH into the veto signalling escrow, they also provide a trustless proof of their stETH balance as of `VetoBalSnapshotShift` days ago. The **veto power** of the staker is set to the minimum of this past balance and the amount of stETH they have in the escrow. When a staker moves their stETH out of the veto signalling escrow, their veto power is re-evaluated as minimum of their current veto power and the amount of the staker's stETH left in the escrow.
+At any moment in time, the **veto power** $P$ of an address $a$ is a dimensionless quantity defined as:
 
-> The past balance is considered to prevent an attack where a malicious actor exploits a smart contract vulnerability, mints unbacked stETH and withdraws it via the dual governance rage quit mechanism without the DAO having the time to observe the unbacked mints and deploy a fix.
+$$
+P(a) = \frac{1}{S_{st}} \left( \text{st}(a) + R_{wst}^{st} \: \text{wst}(a) + \sum_{N_i \in \text{WR}(a)} \text{amt}(N_i) \right)
+$$
 
-At the moment the total veto power in the signalling escrow exceeds `VetoFirstSealThreshold` percent of the current stETH total supply, the governance is transferred into the Veto Signalling state.
+where $S_{st}$ is the current stETH total supply, $\text{st}(a)$ is the stETH balance the address $a$ currently has in the veto escrow, $R_{wst}^{st}$ is the current conversion rate from wstETH to stETH (the result of the `stETH.getPooledEthByShares(10**18) / 10**18` call), $\text{wst}(a)$ is the wstETH balance the address $a$ currently has in the veto escrow, $\text{WR}(a)$ is the set of unclaimed withdrawal NFTs the address $a$ currently has in the veto escrow, $\text{amt}(N_i)$ is the underlying stETH amount of the withdrawal NFT $N_i$.
+
+An address can also convert their stETH or wstETH held in the veto signalling escrow to a withdrawal NFT, sending the (w)stETH for withdrawal via the regular withdrawal queue mechanism and keeping the withdrawal NFT in the veto signalling escrow. This action doesn't change the veto power of the address.
+
+The **total veto power** in the signalling escrow is the sum of veto power of all addresses.
+
+At the moment the total veto power in the signalling escrow exceeds `VetoFirstSealThreshold` percents of the current stETH total supply, the governance is transferred into the Veto Signalling state.
 
 > Proposed values, to be modeled and refined:
-> `VetoBalSnapshotShift = 15 days`
 > `VetoFirstSealThreshold = 1%`
 
 ### Veto Signalling state
@@ -60,7 +68,9 @@ The Veto Signalling state's purpose is two-fold:
 
 While in this state, the DAO can vote on new proposals but cannot execute the decisions, including the decisions that were pending prior to the governance entering this state.
 
-Stakers can freely move stETH in and out of the veto signalling escrow. Each time this happens, the target duration of the state is re-evaluated: from `VetoSignallingMinDuration` when the amount of veto power equals `VetoFirstSealThreshold` up to `VetoSignallingMaxDuration` when the amount of veto power is at least `VetoSecondSealThreshold`. If the amount of veto power is less than `VetoFirstSealThreshold`, the target duration is set to $0$.
+Stakers can freely move stETH, wstETH, and withdrawal NFTs in and out of the veto signalling escrow. Each time this happens, as well as each time the stETH total supply changes, the total veto power in the veto signalling escrow and the target duration of the state is re-evaluated: from `VetoSignallingMinDuration` when the total veto power equals `VetoFirstSealThreshold` up to `VetoSignallingMaxDuration` when the total veto power is at least `VetoSecondSealThreshold`. If the total veto power is less than `VetoFirstSealThreshold`, the target duration is set to $0$.
+
+The target Veto Signalling state duration $T_{target}(p)$ given the current total veto power $p$ in the veto signalling escrow is calculated as follows:
 
 $$
 T_{target}(p) = 
@@ -75,9 +85,11 @@ $$
 T(p) = T_{min} + \frac{(p - P_{min})} {P_{max} - P_{min}} (T_{max} - T_{min})
 $$
 
+where $P_{min}$ is `VetoFirstSealThreshold`, $P_{max}$ is `VetoSecondSealThreshold`, $T_{min}$ is `VetoSignallingMinDuration`, $T_{max}$ is `VetoSignallingMaxDuration`.
+
 If, as the result of this re-evaluation or as the result of the time passing, the current duration of the state exceeds the target one, either of the following happens:
 
-1. the Deactivation sub-state of the Veto Signalling state is entered if the combined veto power in the signalling escrow is below the `VetoSecondSealThreshold`,
+1. the Deactivation sub-state of the Veto Signalling state is entered if the total veto power in the signalling escrow is below the `VetoSecondSealThreshold`,
 2. otherwise, the Veto Signalling state is exited and the governance is transferred to the Rage Quit Accumulation state (this can happen iff the governance already spent `VetoSignallingMaxDuration` in this state).
 
 There is one special kind of proposal that the DAO can both vote on and execute: $KillAllPendingProposals$. If this proposal passes and gets executed while the governance is in the Veto Signalling state, all proposals that are not executed at the moment the governance leaves the Veto Signalling state will become forever unexecutable (killed). This mechanism provides a way for the DAO and stakers to negotiate and de-escalate if consensus is reached.
@@ -93,7 +105,7 @@ The state's purpose is to allow all stakers to observe the Veto Signalling being
 
 In this sub-state, the DAO cannot submit and execute proposals but can vote on already submitted undecided proposals so they become decided.
 
-If, as the result of a staker moving their stETH into the veto signalling escrow, the target duration of the Veto Signalling state becomes more than its current duration, the deactivation sub-state is exited (so only the main Veto Signalling state remains entered).
+If, as the result of a staker moving their (w)stETH or withdrawal NFTs into the veto signalling escrow or the stETH total supply changing, the target duration of the Veto Signalling state becomes more than its current duration, the deactivation sub-state is exited (so only the main Veto Signalling state remains entered).
 
 If this sub-state is not exited before `VetoSignallingDeactivationDuration` days pass since its entrance, the governance is transferred to the Veto Cooldown state. The `VetoSignallingDeactivationDuration` value should exceed the DAO voting duration to guarantee that no undecided DAO proposals are left by the time the Veto Cooldown is activated.
 
@@ -115,9 +127,11 @@ Entering this state means that stakers and the DAO weren't able to resolve the d
 
 Rage quit allows stakers to withdraw ETH without being subject to pending or new DAO decisions. The Rage Quit Accumulation state is the first phase of this process. In this state, the DAO can submit and vote on proposals but cannot execute any decisions.
 
-Upon the Rage Quit Accumulaiton state entry, all stETH from the veto signalling escrow is moved to the **rage quit escrow**. This escrow doesn't allow withdrawing stETH: instead, all stETH locked there will be withdrawn to ETH as the result of the rage quit process.
+Upon the Rage Quit Accumulaiton state entry, all stETH, wstETH, and withdrawal NFTs from the veto signalling escrow are moved to the **rage quit escrow**. This escrow doesn't allow moving any tokens out of it: instead, all tokens locked there will be withdrawn to ETH as the result of the rage quit process.
 
-This state gives additional time for stakers to observe the pending DAO decisions and sending stETH for withdrawal by locking it into the rage quit escrow.
+> Note: the actual implementation of the mechanism would avoid moving an unbounded number of NFTs in order to perform this state transition, as well as the transition from the Rage Quit state. In this document, the implementation details are omitted for readability.
+
+This state gives additional time for stakers to observe the pending DAO decisions and sending (w)stETH for withdrawal by locking it into the rage quit escrow.
 
 The state lasts `RageQuitAccumulationDuration` days. After this time passes, the governance is transferred to the Rage Quit state.
 
@@ -128,16 +142,16 @@ The state lasts `RageQuitAccumulationDuration` days. After this time passes, the
 
 The Rage Quit state allows all stakers that elected to leave the protocol via rage quit to fully withdraw their ETH without being subject to any new or pending DAO decisions.
 
-Upon entry of the Rage Quit state, all stETH from the rage quit escrow is sent for withdrawal. This state lasts until the withdrawal is completed. The DAO can submit and vote on proposals but cannot execute the resulting decisions.
-
-Stakers are not allowed to lock stETH into the rage quit escrow anymore. However, they can move stETH to the veto signalling escrow (see [Veto Signalling state](#Veto-Signalling-state)) to block pending DAO decisions by forcing the Veto Signalling as the next governance state.
+Upon entry of the Rage Quit state, all stETH and wstETH from the rage quit escrow is sent for withdrawal. This state lasts until the withdrawal is completed. The DAO can submit and vote on proposals but cannot execute the resulting decisions.
 
 When withdrawal is complete, two things happen simultaneously:
 
-1. The withdrawn ETH is moved to the **rage quit withdrawal vault**, an immutable smart contract allowing all participants of the rage quit to get the withdrawn ETH after a timelock lasting `RageQuitEthWithdrawalTimelock` days.
+1. The withdrawn ETH, as well as all withdrawal NFTs currently held in the rage quit escrow, are moved to the **rage quit withdrawal vault**, an immutable smart contract allowing all participants of the rage quit to get the withdrawn ETH after a timelock lasting `RageQuitEthWithdrawalTimelock` days.
 2. The governance exits the Rage Quit state.
 
-The next state depends on the total amount of veto power locked in the veto signalling escrow: if it exceeds `VetoFirstSealThreshold`, the governance is transferred to the Veto Signalling state; otherwise, to the Normal state.
+While this state is active, stakers are not allowed to lock (w)stETH into the rage quit escrow. However, they can move (w)stETH and withdrawal NFTs that are not part of the ongoing rage quit process to the veto signalling escrow.
+
+The next state depends on the total veto power in the veto signalling escrow: if it exceeds `VetoFirstSealThreshold`, the governance is transferred to the Veto Signalling state; otherwise, to the Normal state.
 
 > Proposed values, to be modeled and refined:
 > `RageQuitEthWithdrawalTimelock = 60 days`
@@ -164,7 +178,7 @@ The sub-committe members should be elected by a DAO vote (subject to dual govern
 
 ### Governance states overview
 
-|State |DAO: submit props|DAO: kill props|DAO: exec props|stETH: join/leave signalling escrow|stETH: join rage quit escrow|
+|State |DAO: submit props|DAO: kill props|DAO: exec props|Stakers: join/leave signalling escrow|Stakers: join rage quit escrow|
 |------------------------------|---|---|---|---|---|
 |Normal                        | ✓ | ✓ | ✓ | ✓ |   |
 |Veto Signalling               | ✓ | ✓ |   | ✓ |   |
@@ -203,9 +217,8 @@ Dual governance should not cover:
 
 ## Remaining questions
 
-1. Can we protect from stETH minting vulnerability without considering the past balance?
-2. Can we do without the Tiebreaker Committee to protect from an attacker abusing rage quit to exploit a SC vulnerability while locking the code upgradeability by the DAO?
-3. Related to 2: is voting within stakers for a proposal execution while the DAO is locked better than an external committee? Allows to push a fix with collaboration from stakers but makes an attack on the DAO easier: you'd only need to bribe/purchase enough stake to outvote the active honest stakers. How about additionally requiring supermajority of NOs to support this vote? Successful vote may also delegate the execution right to an emergency committee instead of just executing, further limiting the committee power compared to the proposed design.
+1. Can we do without the Tiebreaker Committee to protect from an attacker abusing rage quit to exploit a SC vulnerability while locking the code upgradeability by the DAO?
+2. Related to 1: is voting within stakers for a proposal execution while the DAO is locked better than an external committee? Allows to push a fix with collaboration from stakers but makes an attack on the DAO easier: you'd only need to bribe/purchase enough stake to outvote the active honest stakers. How about additionally requiring supermajority of NOs to support this vote? Successful vote may also delegate the execution right to an emergency committee instead of just executing, further limiting the committee power compared to the proposed design.
 
 
 ## Possible next iterations on governance and risk minimization
@@ -312,7 +325,12 @@ This mechanism increases the cost of a vote-bying attack on the DAO by introduci
 
 ## Changelog
 
-### 2023-10-23 (this document)
+### 2023-12-05 (this document)
+
+* Removed the stETH balance snapshotting mechanism since the Tiebreaker Committee already allows recovering from an infinite stETH mint vulnerability.
+* Added support for using withdrawal NFTs in the veto escrow.
+
+### [2023-10-23](https://hackmd.io/@skozin/SJdSE51Ep)
 
 A major re-work of the DG mechanism (previous version [here](https://hackmd.io/@lido/BJKmFkM-i)).
 
