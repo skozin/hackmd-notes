@@ -1,6 +1,6 @@
 # Dual Governance specification
 
-**A version from 2024-04-04.**
+**A version from 2024-04-10.**
 
 ---
 
@@ -8,9 +8,9 @@ Dual Governance (DG) is a governance subsystem that sits between the Lido DAO, r
 
 This document provides the system description on the code architecture level. A detailed description on the mechanism level can be found in the [Dual Governance mechanism design][mech design] document which should be considered an integral part of this specification.
 
-[mech design]: https://hackmd.io/@skozin/rkD1eUzja
+[mech design]: https://hackmd.io/@skozin/r1ZFdW4lA
 
-[mech design - tiebreaker]: https://hackmd.io/@skozin/rkD1eUzja#Tiebreaker-Committee
+[mech design - tiebreaker]: https://hackmd.io/@skozin/r1ZFdW4lA#Tiebreaker-Committee
 
 
 ## System overview
@@ -64,7 +64,7 @@ By the time the dynamic timelock described above elapses, one of the following o
 
 The proposal execution flow comes after the dynamic timelock elapses and the proposal is scheduled for execution. The system can function in two deployment modes which affect the flow.
 
-![image](https://hackmd.io/_uploads/SkknCeoJR.png)
+![image](https://hackmd.io/_uploads/Hy_BI_ExC.png)
 
 #### Regular deployment mode
 
@@ -118,7 +118,7 @@ These transitions are enabled by three processes (see the [mechanism design docu
 2. Protocol withdrawals processing (in the `RageQuit` state);
 3. Time passing.
 
-![image](https://hackmd.io/_uploads/BJSm_cKyC.png)
+![image](https://hackmd.io/_uploads/ByN98OEgC.png)
 
 
 ## Rage quit
@@ -133,7 +133,7 @@ At any time, only one instance of the rage quit process can be active.
 
 From the stakers' point of view, opposition to the DAO and the rage quit process can be described by the following diagram:
 
-![image](https://hackmd.io/_uploads/SylRb5K1C.png)
+![image](https://hackmd.io/_uploads/HJIcAK4lC.png)
 
 
 ## Tiebreaker committee
