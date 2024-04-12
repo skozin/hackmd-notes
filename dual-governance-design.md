@@ -1,6 +1,6 @@
-# Dual Governance mechanism design (2024-04-10)
+# Dual Governance mechanism design
 
-**A version from 2024-04-10. Please find the current version [here](https://hackmd.io/@skozin/r17mlW2la).**
+**A working draft. Please find the most recent version [here](https://github.com/lidofinance/dual-governance/blob/develop/docs/mechanism.md).**
 
 ---
 
@@ -95,39 +95,41 @@ SignallingEscrowMinLockTime = 5 hours
 The DG mechanism can be described as a state machine defining the global governance state, with each particular state imposing different limitations on the actions the DAO can perform, and state transitions being driven by stakers' actions and (w)stETH withdrawals processing.
 
 |State |DAO can submit proposals|DAO can execute proposals|
-|-------------------------------|---|---|
-|Normal                         | ✓ | ✓ |
-|Veto Signalling                | ✓ |   |
-|Veto Signalling (deactivation) |   |   |
-|Veto Cooldown                  |   | ✓ |
-|Rage Quit                      | ✓ |   |
+|----------------------------------|---|---|
+|Normal                            | ✓ | ✓ |
+|Veto Signalling                   | ✓ |   |
+|Veto Signalling: RQ Accumulation  | ✓ |   |
+|Veto Signalling: Deactivation     |   |   |
+|Veto Cooldown                     |   | ✓ |
+|Rage Quit                         | ✓ |   |
 
-![image](https://hackmd.io/_uploads/SkDcy5Y1C.png)
+![image](https://hackmd.io/_uploads/BJyur6LgA.png)
 
 Let's now define these states and transitions.
 
 :::info
 When a state has multiple outgoing transitions, their conditions are avaluated in the order they're listed in the text. If a condition evaluates to true, the further evaluation stops and the corresponsing transition is triggered.
+
+Multiple state transitions can be sequentially triggered at the same timestamp, provided that each subsequent transition's condition is re-evaluated and holds true after the preceding transition is triggered.
 :::
 
 
 ### Normal state
 
-The Normal state is the state the mechanism is designed to spend the most time within. The DAO can submit the approved proposals to the DG and execute them after the standard timelock of `ProposalExecutionMinTimelock` days passes since the proposal's submission.
+The Normal state is the state the mechanism is designed to spend the most time within. The DAO can submit the approved proposals to the DG and execute them provided that the proposal being executed is not cancelled and was submitted more than `ProposalExecutionMinTimelock` days ago.
 
 **Transition to Veto Signalling**. If, while the state is active, the following condition becomes true:
 
 $$
-\big( R(t) > R_1 \big) \, \land \, \big( t - t^N_{act} > T^N_{min} \big)
+R > R_1
 $$
 
-where $R_1$ is `FirstSealRageQuitSupport`, $t^N_{act}$ is the time the Normal state was entered, and $T^N_{min}$ is `NormalStateMinDuration`, the Normal state is exited and the Veto Signalling state is entered.
+where $R_1$ is `FirstSealRageQuitSupport`, the Normal state is exited and the Veto Signalling state is entered.
 
 ```env
 # Proposed values, to be modeled and refined
 ProposalExecutionMinTimelock = 3 days
 FirstSealRageQuitSupport = 0.01
-NormalStateMinDuration = 5 hours
 ```
 
 
@@ -173,15 +175,15 @@ When the current rage quit support changes due to stakers locking or unlocking t
 
 Let's now define the outgoing transitions.
 
-**Transition to Rage Quit**. If, while Veto Signalling is active (including while the Deactivation sub-state is active), the following expression becomes true:
+**Transition to RQ Accumulation**. If, while Veto Signalling is active but none of the sub-states are active, the following expression becomes true:
 
 $$
 \big( t - t^S_{act} > L_{max} \big) \, \land \, \big( R > R_2 \big)
 $$
 
-the Veto Signalling state is exited and the Rage Quit state is entered.
+the RQ Accumulation sub-state is entered without exiting the parent Veto Signalling state.
 
-**Transition to Deactivation**. If, while Veto Signalling is active and the Deactivation sub-state is not active, the following expression becomes true:
+**Transition to Deactivation**. If, while Veto Signalling is active but none of the sub-states are active, the following expression becomes true:
 
 $$
 \left( t - \max \left\{ t^S_{act} \,,\, t_{prop} \right\} > T_{lock}(R) \right) \, \land \, \left( t - t^S_{react} > T^{Sr}_{min} \right)
@@ -197,7 +199,7 @@ VetoSignallingMinReactivationDuration = 5 hours
 SecondSealRageQuitSupport = 0.1
 ```
 
-#### Deactivation sub-state
+### Veto Signalling: Deactivation sub-state
 
 The sub-state's purpose is to allow all stakers to observe the Veto Signalling being deactivated and react accordingly before non-cancelled proposals can be executed. In this sub-state, the DAO cannot submit proposals to the DG or execute pending proposals.
 
@@ -222,9 +224,35 @@ where $t^{SD}_{act}$ is the time the Deactivation sub-state was entered and $T^{
 VetoSignallingDeactivationMaxDuration = 3 days
 ```
 
+### Veto Signalling: RQ Accumulation sub-state
+
+The RQ Accumulation sub-state provides an additional delay before the rage quit starts, allowing more stakers to join. In this state, the DAO can submit proposals but cannot execute them.
+
+**Transition to the parent state**. If, while this sub-state is active, the following expression becomes true:
+
+$$
+R \leq R_2
+$$
+
+then the sub-state is exited so only the parent Veto Signalling state remains active.
+
+**Transition to Rage Quit**. If, while this sub-state is active, the following expression becomes true:
+
+$$
+\big( t - t^{SA}_{act} > T^{SA}_{max} \big) \, \land \, \big( R > R_2 \big)
+$$
+
+where $t^{SA}_{act}$ is the time the RQ Accumulation sub-state was entered and $T^{SA}_{max}$ is `VetoSignallingRqAccumulationMaxDuration`, then the RQ Accumulation sub-state is exited along with its parent Veto Signalling state and the Rage Quit state is entered.
+
+```env
+# Proposed values, to be modeled and refined
+VetoSignallingRqAccumulationMaxDuration = 3 days
+```
+
+
 ### Veto Cooldown state
 
-In the Veto Cooldown state, the DAO cannot submit proposals to the DG but can execute pending non-cancelled proposals. It exists to guarantee that no staker possessing enough stETH to generate `FirstSealRageQuitSupport` can lock the governance indefinitely without rage quitting the protocol.
+In the Veto Cooldown state, the DAO cannot submit proposals to the DG but can execute pending non-cancelled proposals, provided that the proposal being executed was submitted more than `ProposalExecutionMinTimelock` days ago. This state exists to guarantee that no staker possessing enough stETH to generate `FirstSealRageQuitSupport` can lock the governance indefinitely without rage quitting the protocol.
 
 **Transition to Veto Signalling**. If, while the state is active, the following condition becomes true:
 
@@ -322,9 +350,12 @@ Given the updated Gate Seal behaviour, the system allows for reaching a deadlock
 
 Apart from the Gate Seal being activated, withdrawals can become dysfunctional due to a bug in the protocol code. If this happens while the Rage Quit state is active, it would also trigger the deadlock since a DAO proposal fixing the bug cannot be executed until the Rage Quit state is exited.
 
-To resolve the potential deadlock, the mechanism contains a third-party arbiter **Tiebreaker Committee** elected by the DAO. The committee gains its power only under the specific conditions of the deadlock (see below), and the power is limited by bypassing the DG dynamic timelock for pending proposals approved by the DAO.
+To resolve the potential deadlock, the mechanism contains a third-party arbiter **Tiebreaker Committee** elected by the DAO. The committee gains its power only under the specific conditions of the deadlock (see below), and can only perform the following actions:
 
-Specifically, the Tiebreaker committee can execute any pending proposal submitted by the DAO to DG, subject to a timelock of `TiebreakerExecutionTimelock` days, iff any of the following two conditions is true:
+* Execute any pending proposal submitted by the DAO to DG (i.e. bypass the DG dynamic timelock).
+* Unpause the protocol withdrawals given that they're currently paused by the Gate Seal.
+
+The Tiebreaker committee can perform the above actions, subject to a timelock of `TiebreakerExecutionTimelock` days, iff any of the following two conditions is true:
 
 * **Tiebreaker Condition A**: (governance state is Rage Quit) $\land$ (protocol withdrawals are paused by a Gate Seal).
 * **Tiebreaker Condition B**: (governance state is Rage Quit) $\land$ (last time governance exited Normal or Veto Cooldown state was more than `TiebreakerActivationTimeout` days ago).
@@ -447,7 +478,13 @@ This mechanism increases the cost of a vote-bying attack on the DAO by introduci
 
 ## Changelog
 
-### 2024-04-10 (this document)
+### Draft (this document)
+
+* Removed the lower boundary on the Normal state duration.
+* Added Veto Signalling: RQ Accumulation sub-state.
+* Allowed the Tiebreaker committee to unpause withdrawals.
+
+### 2024-04-10
 
 * Redesigned the Veto Signalling exit conditions and the Deactivation phase transitions: the Deactivation duration is now constant but Veto Signalling duration gets extended each time a new proposal is submitted.
     
@@ -458,7 +495,7 @@ This mechanism increases the cost of a vote-bying attack on the DAO by introduci
     > 1. A malicious actor front-runs submission of a proposal to the DG with a transaction that locks enough tokens in the signalling escrow to generate `FirstSealRageQuitSupport`, and immediately initiates the unlock. The governance is transitioned into the Veto Signalling state.
     > 2. As soon as the `SignallingEscrowMinLockTime` passes, the actor unlocks their tokens from the escrow. This transitions the governance into the Veto Signalling Deactivation state that lasts `VetoSignallingMaxDuration`.
 
-    > As one can see, the actor was able to delay the governance execution by `SignallingEscrowMinLockTime + VetoSignallingMaxDuration` while controlling tokens only enough to generate `FirstSealRageQuitSupport` and locking them for only the `SignallingEscrowMinLockTime` which makes for a rather cheap and efficient DoS attack.
+    > As one can see, the actor was able to delay the governance execution by `VetoSignallingMaxDuration` while controlling tokens only enough to generate `FirstSealRageQuitSupport` and locking them for only the `SignallingEscrowMinLockTime` which makes for a rather cheap and efficient DoS attack.
 
 * Specified the transition conditions more rigorously.
 
